@@ -78,7 +78,12 @@ pub enum Stmt {
     Let {
         name: String,
         mutable: bool,
+        valuetype: Type,
         value: Option<Expr>,
+    },
+
+    Import {
+        name: String,
     },
 
     ExprStmt(Expr),
@@ -316,6 +321,8 @@ impl Parser {
         }
 
         let name = self.take_ident("variable name");
+        self.expect(&TokenKind::Colon, "expected ':' after variable Identifer for type declaration");
+        let valuetype = self.parse_type();
 
         let value = if self.matches(&TokenKind::Equal) {
             Some(self.parse_expr())
@@ -329,7 +336,7 @@ impl Parser {
             mutable = false;
         }
 
-        Stmt::Let { name, mutable, value }
+        Stmt::Let { name, mutable, valuetype, value }
     }
 
     fn parse_stmt(&mut self) -> Stmt {

@@ -1,0 +1,4 @@
+
+void print(String content) {
+    printf("%s", content.data);
+}

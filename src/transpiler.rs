@@ -25,7 +25,7 @@ fn type_to_c(t: &Type) -> &'static str {
         Type::Int       => "int64_t",
         Type::Float     => "double",
         Type::Bool      => "bool",
-        Type::String    => "char*",
+        Type::String    => "String",
         Type::Nil       => "void",
         Type::Custom(_) => "void*", // later: map to struct name etc.
     }
@@ -45,9 +45,7 @@ fn emit_expr(out: &mut String, expr: &Expr) {
         Expr::Bool(false) => out.push_str("0"),
 
         Expr::String(s) => {
-            out.push('"');
-            out.push_str(s);
-            out.push('"');
+            write!(out, "string_from_literal(\"{}\")", s).unwrap();
         }
 
         Expr::Nil => {
@@ -72,6 +70,14 @@ fn emit_expr(out: &mut String, expr: &Expr) {
         }
 
         Expr::Infix { op, lhs, rhs } => {
+            if let InfixOp::AddAssign = op {
+                if let Expr::Ident(var_name) = &**lhs {
+                    if let Expr::String(s) = &**rhs {
+                        write!(out, "string_push(&{}, \"{}\")", var_name, s).unwrap();
+                        return;
+                    }
+                }
+            }
             out.push('(');
             emit_expr(out, lhs);
             out.push(' ');
@@ -133,16 +139,13 @@ fn emit_expr(out: &mut String, expr: &Expr) {
     }
 }
 
-// =======================
-// ==== Stmt → C code ====
-// =======================
 fn emit_stmt(out: &mut String, stmt: &Stmt, indent_level: usize) {
     match stmt {
-        Stmt::Let { name, mutable: _, value } => {
+        Stmt::Let { name, mutable: _, valuetype, value } => {
             indent(out, indent_level);
 
             // for now, assume locals are int64_t
-            out.push_str("int64_t ");
+            out.push_str(&(type_to_c(valuetype).to_owned() + " "));
             out.push_str(name);
 
             if let Some(expr) = value {
@@ -167,6 +170,10 @@ fn emit_stmt(out: &mut String, stmt: &Stmt, indent_level: usize) {
                 emit_expr(out, expr);
             }
             out.push_str(";\n");
+        }
+
+        Stmt::Import { name } => {
+            out.push_str(&format!("#include<{name}>\n"));
         }
 
         Stmt::While { cond, body } => {
@@ -255,7 +262,7 @@ fn emit_function(
 
     // function signature
     indent(out, 0);
-    write!(out, "{} {}(", ret_ty, name).unwrap();
+    if name == "main" { write!(out, "{} {}(", ret_ty, "flip_main").unwrap(); } else { write!(out, "{} {}(", ret_ty, name).unwrap(); }
 
     for (i, (pname, pty)) in params.iter().enumerate() {
         if i > 0 {
@@ -281,8 +288,131 @@ pub fn transpile(program: Program, name: &str) {
     // headers
     genned_code.push_str("#include <stdint.h>\n");
     genned_code.push_str("#include <stdbool.h>\n");
-    genned_code.push_str("#include <stdio.h>\n\n");
+    genned_code.push_str("#include <stdio.h>\n");
+    genned_code.push_str("#include <string.h>\n");
+    genned_code.push_str("#include <stdlib.h>\n");
+    genned_code.push_str("\n");
 
+    // String type support IN C
+    let stringimplementation = String::from(r#"
+        typedef struct {
+            char *data;
+            size_t len;
+            size_t cap;
+        } String;
+
+        String string_new(void) {
+            String s;
+            s.len = 0;
+            s.cap = 16;
+            s.data = (char *)arena_alloc(s.cap + 1);
+            s.data[0] = '\0';
+            return s;
+        }
+
+        void string_grow(String *s, size_t extra) {
+            size_t needed = s->len + extra;
+            if (needed > s->cap) {
+                size_t cap = s->cap;
+                if (cap < 16) cap = 16;
+                while (cap < needed) {
+                    cap *= 2;
+                }
+
+                char *new_data = (char *)arena_alloc(cap + 1);
+                memcpy(new_data, s->data, s->len + 1); // copy old contents + '\0'
+
+                s->data = new_data;
+                s->cap = cap;
+                // old buffer stays in arena, will be reclaimed when arena_destroy() runs
+            }
+        }
+
+        void string_push(String *s, const char *suffix) {
+            size_t add = strlen(suffix);
+            string_grow(s, add);
+
+            memcpy(s->data + s->len, suffix, add);
+            s->len += add;
+            s->data[s->len] = '\0';
+        }
+
+        String string_from_literal(const char *lit) {
+            size_t len = strlen(lit);
+
+            String s;
+            s.len = len;
+            s.cap = len;
+            s.data = (char *)arena_alloc(s.cap + 1);
+            memcpy(s.data, lit, len + 1); // includes '\0'
+
+            return s;
+        }
+    "#);
+    let maincodeimplementation = String::from(r#"
+        int main(void) {
+            arena_init(1024 * 1024 * 16); // 16 MB for now
+            flip_main();
+            arena_destroy();
+        }
+    "#);
+
+    let arenaallocimplementation = String::from(r#"
+        typedef struct {
+            unsigned char *base;
+            size_t capacity;
+            size_t offset;
+        } Arena;
+
+        Arena global_arena;
+
+        void arena_init(size_t cap) {
+            global_arena.base = malloc(cap);
+            global_arena.capacity = cap;
+            global_arena.offset = 0;
+        }
+
+        void arena_destroy() {
+            free(global_arena.base);
+        }
+        void arena_grow(size_t min_extra) {
+            size_t new_cap = global_arena.capacity * 2;
+            size_t needed = global_arena.offset + min_extra;
+
+            if (new_cap < needed) {
+                new_cap = needed * 2;
+            }
+
+            unsigned char *new_base = realloc(global_arena.base, new_cap);
+            if (!new_base) {
+                printf("Arena realloc failed\n");
+                exit(1);
+            }
+
+            global_arena.base = new_base;
+            global_arena.capacity = new_cap;
+        }
+
+        void *arena_alloc(size_t size) {
+            size = (size + 7) & ~((size_t)7);
+
+            if (global_arena.offset + size > global_arena.capacity) {
+                arena_grow(size);
+            }
+
+            void *ptr = global_arena.base + global_arena.offset;
+            global_arena.offset += size;
+            return ptr;
+        }
+
+    "#);
+
+    let basefuncimplementation = fs::read_to_string("basefuncs").expect("Failed to read file");
+
+
+    genned_code.push_str(&arenaallocimplementation);
+    genned_code.push_str(&stringimplementation);
+    genned_code.push_str(&basefuncimplementation);
 
     for stmt in &program.stmts {
         match stmt {
@@ -295,6 +425,7 @@ pub fn transpile(program: Program, name: &str) {
             }
         }
     }
+    genned_code.push_str(&maincodeimplementation);
 
     fs::write(format!("{name}.c"), genned_code).expect("failed to write result.c");
 
