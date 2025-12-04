@@ -114,6 +114,21 @@ fn log(msg: String) => nil {
     println(msg);
 }
 ```
+#### Structs
+```
+struct Person {
+  name: String,
+  age: Int,
+  dead: bool,
+}
+
+fn main() => Nil {
+  let Liam: Person = Person { name="Liam", age="67", dead=False};
+  println(Liam.age);
+}
+```
+
+
 ## 🤝 Contributing
 Pull requests are welcome.
 Also before doing any pull requests read the contributing.md
