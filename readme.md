@@ -4,7 +4,7 @@
 A tiny transpile-compiled language written in Rust, that utilizes the Area allocation and dynamic strings by default.
 
 ![MIT License](https://img.shields.io/badge/License-MIT-green.svg)
-![Made in Rust](https://img.shields.io/badge/Rust-🦀-orange)
+![Made in Rust](https://img.shields.io/badge/Rust-🦀-blue)
 ![Stage](https://img.shields.io/badge/status-alpha-red)
 
 ## Example
